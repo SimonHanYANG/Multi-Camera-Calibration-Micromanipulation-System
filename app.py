@@ -104,10 +104,19 @@ class MainWindow(QMainWindow):
         self.camera_file_layout = QVBoxLayout()
         self.camera_file_group.setLayout(self.camera_file_layout)
         
+        # Camera/File mode switch button
         self.camera_file_switch_btn = QPushButton("Switch to File Mode")
         self.camera_file_switch_btn.setFixedHeight(40)
         self.camera_file_switch_btn.clicked.connect(self.toggle_camera_file_mode)
         self.camera_file_layout.addWidget(self.camera_file_switch_btn)
+        
+        # File load button (only enabled in file mode)
+        self.file_load_btn = QPushButton("Load Image File")
+        self.file_load_btn.setFixedHeight(40)
+        self.file_load_btn.setStyleSheet("background-color: #E0E0E0;")
+        self.file_load_btn.setEnabled(False)  # Initially disabled
+        self.file_load_btn.clicked.connect(self.load_image_file_dialog)
+        self.camera_file_layout.addWidget(self.file_load_btn)
         
         # Video Recording group
         self.recording_group = QGroupBox("Video Recording")
@@ -171,23 +180,15 @@ class MainWindow(QMainWindow):
         self.stage_layout.addWidget(z_info_label)
         
         # Concentric Circle Drawing group
-        self.circle_group = QGroupBox("Concentric Circle Drawing")
+        self.circle_group = QGroupBox("Concentric Quadratic Curve Drawing")
         self.circle_layout = QVBoxLayout()
         self.circle_group.setLayout(self.circle_layout)
         
-        self.draw_circles_btn = QPushButton("Draw Concentric Circles")
+        self.draw_circles_btn = QPushButton("Draw Concentric Quadratic Curve")
         self.draw_circles_btn.setFixedHeight(40)
         self.draw_circles_btn.setStyleSheet("background-color: #FFE6CC;")
         self.draw_circles_btn.clicked.connect(self.start_concentric_circle_drawing)
         self.circle_layout.addWidget(self.draw_circles_btn)
-        
-        # Add confirm button for curve fitting
-        self.confirm_curve_btn = QPushButton("完成")
-        self.confirm_curve_btn.setFixedHeight(40)
-        self.confirm_curve_btn.setStyleSheet("background-color: #CCFFCC;")
-        self.confirm_curve_btn.setEnabled(False)
-        self.confirm_curve_btn.clicked.connect(self.confirm_curve_fitting)
-        self.circle_layout.addWidget(self.confirm_curve_btn)
         
         # Add groups to control panel
         self.right_layout.addWidget(self.camera_file_group)
@@ -230,19 +231,22 @@ class MainWindow(QMainWindow):
         self.concentric_circle_thread.status_signal.connect(self.update_status)
         self.concentric_circle_thread.request_point_signal.connect(self.show_circle_drawing_request)
         self.concentric_circle_thread.drawing_complete_signal.connect(self.on_circle_drawing_complete)
-        self.concentric_circle_thread.request_confirm_signal.connect(self.show_confirm_request)
     
     def check_and_start_camera(self):
         """Check camera availability and start appropriate mode"""
         if self.camera_thread.check_camera_availability():
             self.camera_mode = True
             self.camera_file_switch_btn.setText("Switch to File Mode")
+            self.file_load_btn.setEnabled(False)
+            self.file_load_btn.setStyleSheet("background-color: #E0E0E0;")
             self.update_status("Camera detected, starting camera feed", "info")
         else:
             self.camera_mode = False
-            self.camera_file_switch_btn.setText("Load Image File")
+            self.camera_file_switch_btn.setText("Switch to Camera Mode")
+            self.file_load_btn.setEnabled(True)
+            self.file_load_btn.setStyleSheet("background-color: #CCE5FF;")
             self.show_no_camera_message()
-            self.update_status("No camera detected, click 'Load Image File' to load an image", "warning")
+            self.update_status("No camera detected, please load an image file", "warning")
     
     def show_no_camera_message(self):
         """Show 'Camera not connected' message"""
@@ -281,38 +285,73 @@ class MainWindow(QMainWindow):
         self.concentric_circle_thread.start()
         
         # Start camera thread if camera is available
-        if self.camera_mode:
+        if self.camera_mode and self.camera_thread.camera_available:
             self.camera_thread.start()
     
     def toggle_camera_file_mode(self):
         """Toggle between camera and file mode"""
-        if self.camera_mode and self.camera_thread.camera_available:
+        if self.camera_mode:
             # Switch to file mode
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Load Image File", "", 
-                "Image Files (*.png *.jpg *.jpeg *.bmp *.tiff *.tif)"
-            )
+            self.camera_mode = False
+            self.camera_file_switch_btn.setText("Switch to Camera Mode")
+            self.file_load_btn.setEnabled(True)
+            self.file_load_btn.setStyleSheet("background-color: #CCE5FF;")
+            self.update_status("Switched to file mode. Click 'Load Image File' to load an image.", "info")
             
-            if file_path:
-                self.load_image_file(file_path)
-                self.camera_mode = False
-                self.camera_file_switch_btn.setText("Switch to Camera Mode")
+            # Show placeholder if no file is loaded
+            if self.current_file_image is None:
+                self.show_file_mode_message()
         else:
+            # Switch back to camera mode
             if self.camera_thread.camera_available:
-                # Switch back to camera mode
                 self.camera_mode = True
                 self.camera_file_switch_btn.setText("Switch to File Mode")
+                self.file_load_btn.setEnabled(False)
+                self.file_load_btn.setStyleSheet("background-color: #E0E0E0;")
                 self.current_file_image = None
                 self.update_status("Switched back to camera mode", "info")
             else:
-                # Load file (camera not available)
-                file_path, _ = QFileDialog.getOpenFileName(
-                    self, "Load Image File", "", 
-                    "Image Files (*.png *.jpg *.jpeg *.bmp *.tiff *.tif)"
-                )
-                
-                if file_path:
-                    self.load_image_file(file_path)
+                self.update_status("No camera available, cannot switch to camera mode", "warning")
+    
+    def show_file_mode_message(self):
+        """Show 'File mode' message when no file is loaded"""
+        # Create a placeholder image
+        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+        placeholder.fill(70)  # Slightly lighter gray
+        
+        # Convert to QPixmap and add text
+        h, w, ch = placeholder.shape
+        bytes_per_line = ch * w
+        q_image = QImage(placeholder.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image)
+        
+        # Draw text
+        painter = QPainter(pixmap)
+        painter.setPen(QColor(255, 255, 255))
+        font = QFont()
+        font.setPointSize(20)
+        font.setBold(True)
+        painter.setFont(font)
+        
+        text = "File Mode - Load an image"
+        text_rect = painter.fontMetrics().boundingRect(text)
+        x = (w - text_rect.width()) // 2
+        y = (h - text_rect.height()) // 2
+        painter.drawText(x, y, text)
+        painter.end()
+        
+        self.image_label.setPixmap(pixmap)
+        self.image_label.setFixedSize(pixmap.size())
+    
+    def load_image_file_dialog(self):
+        """Open file dialog to load an image file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Image File", "", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.tiff *.tif)"
+        )
+        
+        if file_path:
+            self.load_image_file(file_path)
     
     def load_image_file(self, file_path):
         """Load and display an image file"""
@@ -428,9 +467,9 @@ class MainWindow(QMainWindow):
                     painter.drawLine(point.x() - 5, point.y(), point.x() + 5, point.y())
                     painter.drawLine(point.x(), point.y() - 5, point.x(), point.y() + 5)
                 
-                # Draw curve 2 points (blue)
+                # Draw curve 2 points (green - same color for both curves' points)
                 for point in self.concentric_circle_thread.curve2_points:
-                    painter.setPen(QPen(QColor(0, 0, 255), 2))
+                    painter.setPen(QPen(QColor(0, 255, 0), 2))
                     painter.drawEllipse(point.x() - 3, point.y() - 3, 6, 6)
                     painter.drawLine(point.x() - 5, point.y(), point.x() + 5, point.y())
                     painter.drawLine(point.x(), point.y() - 5, point.x(), point.y() + 5)
@@ -479,44 +518,18 @@ class MainWindow(QMainWindow):
             self.show_error("No image available for drawing")
             return
         
-        # Show instruction dialog
-        msg = QMessageBox()
-        msg.setWindowTitle("Concentric Circle Drawing")
-        msg.setText("您将被引导完成以下步骤：\n\n"
-                   "1. 点击圆心位置\n"
-                   "2. 依次点击第一个二次曲线上的5个点\n"
-                   "3. 点击'完成'按钮拟合第一个曲线\n"
-                   "4. 依次点击第二个二次曲线上的5个点\n"
-                   "5. 点击'完成'按钮拟合第二个曲线\n\n"
-                   "曲线将自动拟合并保存到文件。")
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        
-        if msg.exec() == QMessageBox.StandardButton.Ok:
-            self.concentric_circle_mode = True
-            self.concentric_circle_thread.start_drawing(self.current_displayed_image)
-            # Request current stage position for coordinate calculation
-            self.stage_thread.request_get_stage_position()
-    
-    def confirm_curve_fitting(self):
-        """Confirm curve fitting"""
-        if self.concentric_circle_mode:
-            self.concentric_circle_thread.confirm_curve_fitting()
-            self.confirm_curve_btn.setEnabled(False)
+        self.concentric_circle_mode = True
+        self.concentric_circle_thread.start_drawing(self.current_displayed_image)
+        # Request current stage position for coordinate calculation
+        self.stage_thread.request_get_stage_position()
     
     def show_circle_drawing_request(self, message):
         """Show circle drawing request message"""
         self.update_status(message, "warning")
-        self.confirm_curve_btn.setEnabled(False)
-    
-    def show_confirm_request(self, message):
-        """Show confirmation request message"""
-        self.update_status(message, "info")
-        self.confirm_curve_btn.setEnabled(True)
     
     def on_circle_drawing_complete(self, result_image, curve1_points, curve2_points):
         """Handle completion of circle drawing"""
         self.concentric_circle_mode = False
-        self.confirm_curve_btn.setEnabled(False)
         # Update display with the result image that has the curves drawn
         self.update_display(result_image)
     

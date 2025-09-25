@@ -10,7 +10,6 @@ class ConcentricCircleThread(QThread):
     status_signal = pyqtSignal(str, str)  # message, type
     request_point_signal = pyqtSignal(str)  # request message
     drawing_complete_signal = pyqtSignal(np.ndarray, list, list)  # image_with_curves, curve1_points, curve2_points
-    request_confirm_signal = pyqtSignal(str)  # request confirmation message
     
     def __init__(self, stage_thread):
         super().__init__()
@@ -19,7 +18,7 @@ class ConcentricCircleThread(QThread):
         self.running = False
         
         # State tracking
-        self.current_step = "none"  # "center", "curve1", "curve1_confirm", "curve2", "curve2_confirm", "complete"
+        self.current_step = "none"  # "center", "curve1", "curve2", "complete"
         self.center_point = None
         self.curve1_points = []
         self.curve2_points = []
@@ -70,7 +69,7 @@ class ConcentricCircleThread(QThread):
             self.center_point = point
             self.current_step = "curve1"
             self.collected_points = 0
-            self.request_point_signal.emit(f"请依次点击第一个二次曲线上的点 (1/{self.points_needed})")
+            self.request_point_signal.emit(f"圆心已设置，请依次点击第一个二次曲线上的点 (1/{self.points_needed})")
             
         elif self.current_step == "curve1":
             self.curve1_points.append(point)
@@ -79,10 +78,28 @@ class ConcentricCircleThread(QThread):
             if self.collected_points < self.points_needed:
                 self.request_point_signal.emit(f"请继续点击第一个二次曲线上的点 ({self.collected_points + 1}/{self.points_needed})")
             else:
-                # All 5 points collected for curve 1, ask for confirmation
-                self.current_step = "curve1_confirm"
-                self.request_confirm_signal.emit("第一个二次曲线的5个点已选择完成，请点击'完成'按钮开始拟合第一个曲线")
-                
+                # All 5 points collected for curve 1, automatically proceed to curve 2
+                try:
+                    curve1_params = self.fit_quadratic_curve(self.curve1_points)
+                    if not self.check_curve_in_bounds(curve1_params, self.current_image.shape):
+                        self.status_signal.emit("第一个二次曲线超出图像边界，请重新选择点", "warning")
+                        self.curve1_points = []
+                        self.collected_points = 0
+                        self.request_point_signal.emit(f"请重新点击第一个二次曲线上的点 (1/{self.points_needed})")
+                        return
+                    
+                    # Move to curve 2
+                    self.current_step = "curve2"
+                    self.collected_points = 0
+                    self.request_point_signal.emit(f"第一个二次曲线完成，请依次点击第二个二次曲线上的点 (1/{self.points_needed})")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to fit first curve: {e}")
+                    self.status_signal.emit("第一个二次曲线拟合失败，请重新选择点", "error")
+                    self.curve1_points = []
+                    self.collected_points = 0
+                    self.request_point_signal.emit(f"请重新点击第一个二次曲线上的点 (1/{self.points_needed})")
+                    
         elif self.current_step == "curve2":
             self.curve2_points.append(point)
             self.collected_points += 1
@@ -90,59 +107,25 @@ class ConcentricCircleThread(QThread):
             if self.collected_points < self.points_needed:
                 self.request_point_signal.emit(f"请继续点击第二个二次曲线上的点 ({self.collected_points + 1}/{self.points_needed})")
             else:
-                # All 5 points collected for curve 2, ask for confirmation
-                self.current_step = "curve2_confirm"
-                self.request_confirm_signal.emit("第二个二次曲线的5个点已选择完成，请点击'完成'按钮开始拟合第二个曲线")
-    
-    def confirm_curve_fitting(self):
-        """Confirm and proceed with curve fitting"""
-        if self.current_step == "curve1_confirm":
-            # Fit first curve
-            try:
-                curve1_params = self.fit_quadratic_curve(self.curve1_points)
-                if not self.check_curve_in_bounds(curve1_params, self.current_image.shape):
-                    self.status_signal.emit("第一个二次曲线超出图像边界，请重新选择点", "warning")
-                    self.curve1_points = []
-                    self.collected_points = 0
-                    self.current_step = "curve1"
-                    self.request_point_signal.emit(f"请重新点击第一个二次曲线上的点 (1/{self.points_needed})")
-                    return
-                
-                self.status_signal.emit("第一个二次曲线拟合完成", "info")
-                self.current_step = "curve2"
-                self.collected_points = 0
-                self.request_point_signal.emit(f"请依次点击第二个二次曲线上的点 (1/{self.points_needed})")
-                
-            except Exception as e:
-                self.logger.error(f"Failed to fit first curve: {e}")
-                self.status_signal.emit("第一个二次曲线拟合失败，请重新选择点", "error")
-                self.curve1_points = []
-                self.collected_points = 0
-                self.current_step = "curve1"
-                self.request_point_signal.emit(f"请重新点击第一个二次曲线上的点 (1/{self.points_needed})")
-                
-        elif self.current_step == "curve2_confirm":
-            # Fit second curve and complete
-            try:
-                curve2_params = self.fit_quadratic_curve(self.curve2_points)
-                if not self.check_curve_in_bounds(curve2_params, self.current_image.shape):
-                    self.status_signal.emit("第二个二次曲线超出图像边界，请重新选择点", "warning")
+                # All 5 points collected for curve 2, automatically complete
+                try:
+                    curve2_params = self.fit_quadratic_curve(self.curve2_points)
+                    if not self.check_curve_in_bounds(curve2_params, self.current_image.shape):
+                        self.status_signal.emit("第二个二次曲线超出图像边界，请重新选择点", "warning")
+                        self.curve2_points = []
+                        self.collected_points = 0
+                        self.request_point_signal.emit(f"请重新点击第二个二次曲线上的点 (1/{self.points_needed})")
+                        return
+                    
+                    # Complete drawing automatically
+                    self.complete_drawing()
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to fit second curve: {e}")
+                    self.status_signal.emit("第二个二次曲线拟合失败，请重新选择点", "error")
                     self.curve2_points = []
                     self.collected_points = 0
-                    self.current_step = "curve2"
                     self.request_point_signal.emit(f"请重新点击第二个二次曲线上的点 (1/{self.points_needed})")
-                    return
-                
-                self.status_signal.emit("第二个二次曲线拟合完成", "info")
-                self.complete_drawing()
-                
-            except Exception as e:
-                self.logger.error(f"Failed to fit second curve: {e}")
-                self.status_signal.emit("第二个二次曲线拟合失败，请重新选择点", "error")
-                self.curve2_points = []
-                self.collected_points = 0
-                self.current_step = "curve2"
-                self.request_point_signal.emit(f"请重新点击第二个二次曲线上的点 (1/{self.points_needed})")
     
     def image_to_stage_coordinates(self, img_point):
         """Convert image coordinates to stage coordinates based on image top-left as origin"""
@@ -237,11 +220,11 @@ class ConcentricCircleThread(QThread):
                 cv2.line(result_image, (point.x() - 5, point.y()), (point.x() + 5, point.y()), self.curve1_color, 1)
                 cv2.line(result_image, (point.x(), point.y() - 5), (point.x(), point.y() + 5), self.curve1_color, 1)
             
-            # Draw curve points with blue color for curve 2
+            # Draw curve points with green color for curve 2 (same as curve 1)
             for point in self.curve2_points:
-                cv2.circle(result_image, (point.x(), point.y()), 3, self.curve2_color, -1)
-                cv2.line(result_image, (point.x() - 5, point.y()), (point.x() + 5, point.y()), self.curve2_color, 1)
-                cv2.line(result_image, (point.x(), point.y() - 5), (point.x(), point.y() + 5), self.curve2_color, 1)
+                cv2.circle(result_image, (point.x(), point.y()), 3, self.curve1_color, -1)
+                cv2.line(result_image, (point.x() - 5, point.y()), (point.x() + 5, point.y()), self.curve1_color, 1)
+                cv2.line(result_image, (point.x(), point.y() - 5), (point.x(), point.y() + 5), self.curve1_color, 1)
             
             # Fit and draw curves
             curve1_params = self.fit_quadratic_curve(self.curve1_points)
@@ -256,7 +239,7 @@ class ConcentricCircleThread(QThread):
             # Emit completion signal
             self.drawing_complete_signal.emit(result_image, self.curve1_points, self.curve2_points)
             self.current_step = "complete"
-            self.status_signal.emit("同心圆绘制完成并保存", "info")
+            self.status_signal.emit("同心二次曲线拟合完成并已自动保存", "info")
             
         except Exception as e:
             self.logger.error(f"Error completing drawing: {e}")

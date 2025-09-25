@@ -9,6 +9,7 @@ class StageThread(QThread):
     status_signal = pyqtSignal(str, str)  # message, type (info, warning, error)
     calibration_point_signal_image_pixel_stage_calibration = pyqtSignal(int, QPoint)  # Point index, point position
     calibration_complete_signal_image_pixel_stage_calibration = pyqtSignal(bool)  # Calibration completed successfully
+    position_signal = pyqtSignal(float, float, float)  # x, y, z position
     
     def __init__(self):
         super().__init__()
@@ -26,6 +27,9 @@ class StageThread(QThread):
         
         # Default pixel to micron conversion
         self.pixel_to_micron_ratio = 0.23125  # Default value for 20x
+        
+        # Store current position for coordinate calculations
+        self.current_stage_position = None
         
         # Predefined calibration point positions (relative to image center)
         self.calibration_offsets_image_pixel_stage_calibration = [
@@ -55,6 +59,9 @@ class StageThread(QThread):
             
             # Load calibration if exists
             self.load_calibration_image_pixel_stage_calibration()
+            
+            # Get initial position
+            self._update_current_position()
             
             while self.running:
                 try:
@@ -112,17 +119,33 @@ class StageThread(QThread):
         except Exception as e:
             self.logger.error(f"Stage cleanup error: {e}")
     
+    def _update_current_position(self):
+        """Update current stage position"""
+        try:
+            xy_pos = self.stage.get_xy_position()
+            z_pos = self.stage.get_z_position()
+            self.current_stage_position = (xy_pos[0], xy_pos[1], z_pos)
+            return self.current_stage_position
+        except Exception as e:
+            self.logger.error(f"Error updating position: {e}")
+            return None
+    
     def get_stage_position(self):
         """Get current stage position and emit it"""
         try:
             xy_pos = self.stage.get_xy_position()
             z_pos = self.stage.get_z_position()
+            self.current_stage_position = (xy_pos[0], xy_pos[1], z_pos)
+            self.position_signal.emit(xy_pos[0], xy_pos[1], z_pos)
             self.status_signal.emit(f"Stage position: X={xy_pos[0]:.2f}, Y={xy_pos[1]:.2f}, Z={z_pos:.2f} μm", "info")
             return xy_pos[0], xy_pos[1], z_pos
         except Exception as e:
             self.logger.error(f"Error getting stage position: {e}")
             self.status_signal.emit(f"Error getting stage position: {str(e)}", "error")
-            return None
+            # Return a default position if stage is not available
+            default_pos = (0.0, 0.0, 0.0)
+            self.position_signal.emit(default_pos[0], default_pos[1], default_pos[2])
+            return default_pos
     
     def move_to_image_point_image_pixel_stage_calibration(self, img_x, img_y):
         """Move stage to position that brings the clicked point to the reference point"""
@@ -153,6 +176,9 @@ class StageThread(QThread):
             # Move the stage
             self.stage.move_xy_to_absolute(new_stage_x, new_stage_y)
             
+            # Update current position
+            self._update_current_position()
+            
             self.status_signal.emit(f"Moving to position: ({new_stage_x:.2f}, {new_stage_y:.2f})", "info")
             
         except Exception as e:
@@ -170,6 +196,9 @@ class StageThread(QThread):
             
             # Get new Z position
             new_z = self.stage.get_z_position()
+            
+            # Update current position
+            self._update_current_position()
             
             self.status_signal.emit(f"Z moved from {current_z:.2f} to {new_z:.2f} (Δz: {z_delta})", "info")
             
