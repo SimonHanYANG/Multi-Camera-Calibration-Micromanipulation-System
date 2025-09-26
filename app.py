@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Laser-assisted viable sperm selection system")
+        self.setWindowTitle("Robotic Micromanipulation Multi-cam Calibration system")
         
         # Set up the UI
         self._setup_ui()
